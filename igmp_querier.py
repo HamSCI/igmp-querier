@@ -249,29 +249,38 @@ def calculate_query_jitter(base_interval: int) -> float:
     return base_interval * (1.0 - jitter)
 
 
-def create_socket(ip: str) -> Optional[socket.socket]:
+def create_socket(ip: str, iface: str) -> Optional[socket.socket]:
     """
     Create and configure the raw IGMP socket.
-    
+
     The socket is configured with:
     - IP_HDRINCL disabled (kernel builds IP header, we add Router Alert via IP_OPTIONS)
     - Router Alert IP option (RFC 2113) for proper IGMP routing
     - Multicast loopback enabled for self-detection
     - 5 second timeout for graceful shutdown checks
-    
+
     Args:
-        ip: The source IP address to bind to
-    
+        ip: The source IP address for outgoing queries (via IP_MULTICAST_IF)
+        iface: Network interface name for SO_BINDTODEVICE scoping
+
     Returns:
         Configured socket or None on failure
+
+    Note: we intentionally do NOT bind() to the unicast ip. On Linux, a raw
+    IPPROTO_IGMP socket bound to a unicast address only receives packets
+    whose destination equals that address, so General Queries (dest
+    224.0.0.1) would be silently dropped — breaking RFC 2236 election on
+    multi-host LANs. SO_BINDTODEVICE gives us interface scoping (important
+    on multi-homed hosts) without the destination-IP filter.
     """
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_IGMP)
-        
-        # Bind to the specific interface IP
-        sock.bind((ip, 0))
-        
-        # Set Multicast Interface
+
+        # Interface scoping — constrains both send and receive to one iface
+        # without the unicast-destination filter that bind((ip, 0)) imposes.
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, iface.encode())
+
+        # Set Multicast Interface (source-IP selection for outgoing queries)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(ip))
         
         # Add Router Alert option (RFC 2113) - required for proper IGMP routing
@@ -469,7 +478,7 @@ def main():
     log.info(f"Query interval: {args.query_interval}s, Competitor timeout: {args.timeout}s")
     
     # Setup Raw Socket (Requires Root)
-    sock = create_socket(state.my_ip)
+    sock = create_socket(state.my_ip, state.interface)
     if sock is None:
         sys.exit(1)
 
@@ -513,7 +522,7 @@ def main():
                     log.info(f"[Main] IP changed from {state.my_ip} to {new_ip}")
                     state.my_ip = new_ip
                 
-                sock = create_socket(state.my_ip)
+                sock = create_socket(state.my_ip, state.interface)
                 if sock is None:
                     log.error("[Main] Failed to recreate socket, will retry...")
                     time.sleep(args.query_interval)
