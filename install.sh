@@ -16,6 +16,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_PATH="/usr/local/bin/igmp_querier.py"
 SERVICE_PATH="/etc/systemd/system/igmp-querier.service"
 
+# Non-interactive overrides (for sigmond and scripted installs):
+#   IGMP_INTERFACE=<name>   pre-select interface, skip prompt
+#   --yes                   non-interactive; auto-confirm replace if running
+YES=0
+for arg in "$@"; do
+    case "$arg" in
+        --yes|-y) YES=1 ;;
+    esac
+done
+
 echo_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 echo_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 echo_error() { echo -e "${RED}[ERROR]${NC} $1"; }
@@ -63,11 +73,34 @@ fi
 
 echo ""
 
-# Let user select interface
-if [[ ${#IF_LIST[@]} -eq 1 ]]; then
+# Pre-selected via IGMP_INTERFACE env var (sigmond / scripted path)?
+if [[ -n "$IGMP_INTERFACE" ]]; then
+    SELECTED_IF=""
+    SELECTED_IP=""
+    for idx in "${!IF_LIST[@]}"; do
+        if [[ "${IF_LIST[$idx]}" == "$IGMP_INTERFACE" ]]; then
+            SELECTED_IF="${IF_LIST[$idx]}"
+            SELECTED_IP="${IP_LIST[$idx]}"
+            break
+        fi
+    done
+    if [[ -z "$SELECTED_IF" ]]; then
+        echo_error "IGMP_INTERFACE='$IGMP_INTERFACE' is not one of the detected"
+        echo_error "multicast-capable interfaces with an IPv4 address."
+        exit 1
+    fi
+    echo_info "Using pre-selected interface (IGMP_INTERFACE): $SELECTED_IF ($SELECTED_IP)"
+elif [[ ${#IF_LIST[@]} -eq 1 ]]; then
     SELECTED_IF="${IF_LIST[0]}"
     SELECTED_IP="${IP_LIST[0]}"
     echo_info "Only one interface found, using: $SELECTED_IF ($SELECTED_IP)"
+elif [[ $YES -eq 1 ]]; then
+    echo_error "Multiple interfaces found — set IGMP_INTERFACE=<name> for"
+    echo_error "non-interactive install, or re-run without --yes to pick."
+    for idx in "${!IF_LIST[@]}"; do
+        echo "  - ${IF_LIST[$idx]} (${IP_LIST[$idx]})"
+    done
+    exit 1
 else
     read -p "Select interface number [1-${#IF_LIST[@]}]: " selection
     if [[ ! "$selection" =~ ^[0-9]+$ ]] || [[ "$selection" -lt 1 ]] || [[ "$selection" -gt ${#IF_LIST[@]} ]]; then
@@ -84,10 +117,14 @@ echo_info "Selected interface: $SELECTED_IF ($SELECTED_IP)"
 # Check if service is already running
 if systemctl is-active --quiet igmp-querier 2>/dev/null; then
     echo_warn "igmp-querier service is currently running"
-    read -p "Stop and replace existing installation? [y/N]: " confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        echo_info "Installation cancelled"
-        exit 0
+    if [[ $YES -eq 1 ]]; then
+        echo_info "(--yes) stopping and replacing existing installation"
+    else
+        read -p "Stop and replace existing installation? [y/N]: " confirm
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            echo_info "Installation cancelled"
+            exit 0
+        fi
     fi
     echo_info "Stopping existing service..."
     systemctl stop igmp-querier
