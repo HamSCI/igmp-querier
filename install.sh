@@ -95,12 +95,37 @@ elif [[ ${#IF_LIST[@]} -eq 1 ]]; then
     SELECTED_IP="${IP_LIST[0]}"
     echo_info "Only one interface found, using: $SELECTED_IF ($SELECTED_IP)"
 elif [[ $YES -eq 1 ]]; then
-    echo_error "Multiple interfaces found — set IGMP_INTERFACE=<name> for"
-    echo_error "non-interactive install, or re-run without --yes to pick."
+    # Non-interactive: the IGMP querier belongs on the LAN that carries radiod's
+    # multicast — the default-route interface — never a VPN/virtual one.  Pick it
+    # automatically; only bail if there's genuinely no obvious LAN interface.
+    DEFAULT_IF=$(ip route show default 2>/dev/null | grep -oP 'dev \K\S+' | head -1)
+    SELECTED_IF=""; SELECTED_IP=""
     for idx in "${!IF_LIST[@]}"; do
-        echo "  - ${IF_LIST[$idx]} (${IP_LIST[$idx]})"
+        if [[ "${IF_LIST[$idx]}" == "$DEFAULT_IF" ]]; then
+            SELECTED_IF="${IF_LIST[$idx]}"; SELECTED_IP="${IP_LIST[$idx]}"; break
+        fi
     done
-    exit 1
+    if [[ -z "$SELECTED_IF" ]]; then
+        PHYS=()
+        for idx in "${!IF_LIST[@]}"; do
+            case "${IF_LIST[$idx]}" in
+                tailscale*|tun*|tap*|wg*|docker*|veth*|br-*|virbr*|zt*) : ;;
+                *) PHYS+=("$idx") ;;
+            esac
+        done
+        if [[ ${#PHYS[@]} -eq 1 ]]; then
+            SELECTED_IF="${IF_LIST[${PHYS[0]}]}"; SELECTED_IP="${IP_LIST[${PHYS[0]}]}"
+        fi
+    fi
+    if [[ -n "$SELECTED_IF" ]]; then
+        echo_info "Auto-selected LAN interface (default route): $SELECTED_IF ($SELECTED_IP)"
+    else
+        echo_error "Multiple interfaces and no obvious LAN — set IGMP_INTERFACE=<name>:"
+        for idx in "${!IF_LIST[@]}"; do
+            echo "  - ${IF_LIST[$idx]} (${IP_LIST[$idx]})"
+        done
+        exit 1
+    fi
 else
     read -p "Select interface number [1-${#IF_LIST[@]}]: " selection
     if [[ ! "$selection" =~ ^[0-9]+$ ]] || [[ "$selection" -lt 1 ]] || [[ "$selection" -gt ${#IF_LIST[@]} ]]; then
