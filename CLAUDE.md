@@ -21,7 +21,7 @@ sigmond client (no contract surface, no `deploy.toml`).
 ## Authors
 
 - Michael James Hauan — adapted for KA9Q-radio support.
-- Repo: https://github.com/mijahauan/igmp-querier
+- Repo: https://github.com/HamSCI/igmp-querier
 
 ## Layout
 
